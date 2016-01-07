@@ -20,21 +20,22 @@ AcadPreviewCtrl::~AcadPreviewCtrl()
 	_clear();
 }
 
-//函数功能:传入数据库指针即可预览数据库中的实体
-BOOL AcadPreviewCtrl::init(AcDbDatabase *pDb)
-{
-	_clear();
-	return _initInner(pDb);
-}
-
-void AcadPreviewCtrl::set_view_dir(const AcGeVector3d &viewDir, const AcGeVector3d &upVector)
+void AcadPreviewCtrl::refresh_vdir(const AcGeVector3d &viewDir, const AcGeVector3d &upVector)
 {
 	_init_view(viewDir, upVector);
+	OnPaint();
 }
 
-void AcadPreviewCtrl::set_render_mode(AcGsView::RenderMode mode)
+void AcadPreviewCtrl::refresh_render_mode(AcGsView::RenderMode mode)
 {
 	_view->setMode(mode);
+	OnPaint();
+}
+
+void AcadPreviewCtrl::show(AcDbDatabase *db, const AcGeVector3d &vdir, const AcGeVector3d &upvec, AcGsView::RenderMode mode)
+{
+	_clear();
+	_init(db, vdir, upvec, mode);
 	OnPaint();
 }
 
@@ -46,6 +47,7 @@ BEGIN_MESSAGE_MAP(AcadPreviewCtrl, CStatic)
 	ON_WM_MOUSEWHEEL()
 	ON_WM_MBUTTONDOWN()
 	ON_WM_MBUTTONUP()
+	ON_WM_MBUTTONDBLCLK()
 	ON_WM_NCHITTEST()
 	ON_WM_SETFOCUS()
 	ON_WM_LBUTTONUP()
@@ -161,6 +163,8 @@ void AcadPreviewCtrl::OnMouseMove(UINT nFlags, CPoint point)
 		Invalidate();
 		_startPt = point;
 	}
+	else
+		SetFocus();
 }
 
 BOOL AcadPreviewCtrl::OnMouseWheel(UINT nFlags, short zDelta, CPoint pt)
@@ -210,6 +214,11 @@ void AcadPreviewCtrl::OnLButtonUp(UINT nFlags, CPoint point)
 	ReleaseCapture();
 }
 
+void AcadPreviewCtrl::OnMButtonDblClk(UINT nFlags, CPoint point)
+{
+	_init_view(_view->position() - _view->target(), _view->upVector());
+	OnPaint();
+}
 
 void AcadPreviewCtrl::_clear()
 {
@@ -293,88 +302,86 @@ bool AcadPreviewCtrl::_getActiveViewPortInfo(ads_real &height, ads_real &width,
 }
 
 //函数功能:初始化图形系统
-void AcadPreviewCtrl::_initGS(HINSTANCE hRes)
+void AcadPreviewCtrl::_init_gs(HINSTANCE hRes)
 {
-	// 加载光标
+	// - 加载光标
 	if (_hPanCursor == NULL)
 		_hPanCursor = LoadCursor(hRes, MAKEINTRESOURCE(IDI_PAN));
 	if (_hOrbitCursor == NULL)
 		_hOrbitCursor = LoadCursor(hRes, MAKEINTRESOURCE(IDI_ORBIT));
 	::SetClassLong(m_hWnd, GCL_HCURSOR, NULL);
 
-	// 初始化视图
+	// - 初始化视图
+	// - 获得图形系统管理器
+	AcGsManager *manager = acgsGetGsManager();
+	assert(manager);
 
-	// 获得图形系统管理器
-	AcGsManager *pGsManager = acgsGetGsManager();
-	assert(pGsManager);
-	// 获得图形系统类工厂
-	AcGsClassFactory *pFactory = pGsManager->getGSClassFactory();
-	assert(pFactory);
+	// - 获得图形系统类工厂
+	AcGsClassFactory *factory = manager->getGSClassFactory();
+	assert(factory);
 
-	// 创建图形系统设备
-	_device = pGsManager->createAutoCADDevice(m_hWnd);
+	// - 创建图形系统设备
+	_device = manager->createAutoCADDevice(m_hWnd);
 	assert(_device);
 
 	CRect rect;
 	GetClientRect(&rect);
 
 	_device->onSize(rect.Width(), rect.Height());
-	// 创建图形系统视图
-	_view = pFactory->createView();
+	// - 创建图形系统视图
+	_view = factory->createView();
 	assert(_view);
 
-	_model = pGsManager->createAutoCADModel();
+	_model = manager->createAutoCADModel();
 	assert(_model);
 
 	_device->add(_view);
 }
 
-BOOL AcadPreviewCtrl::_initInner(AcDbDatabase *pDb)
+void AcadPreviewCtrl::_init(AcDbDatabase *db, const AcGeVector3d &vdir, const AcGeVector3d &upvec, AcGsView::RenderMode mode)
 {
-	if (pDb == NULL)
-		return FALSE;
-	_db = pDb;
+	_db = db;
 
+	// - 获取所有对象
 	Acad::ErrorStatus es = Acad::eOk;
-	AcDbBlockTableRecord *pRec = NULL;
-	AcDbBlockTable *pTab = NULL;
-	if ((es = _db->getBlockTable(pTab, AcDb::kForRead)) != Acad::eOk)
-		return FALSE;
+	AcDbBlockTableRecord *rcd = NULL;
+	AcDbBlockTable *tbl = NULL;
+	es = _db->getBlockTable(tbl, AcDb::kForRead);
+	if (tbl == NULL)
+		return;
 
-	if ((es = pTab->getAt(ACDB_MODEL_SPACE, pRec, AcDb::kForRead)) != Acad::eOk)
-	{
-		pTab->close();
-		return FALSE;
-	}
-	pTab->close();
+	es = tbl->getAt(ACDB_MODEL_SPACE, rcd, AcDb::kForRead);
+	tbl->close();
+	if (rcd == NULL)
+		return;
 
-	AcDbObjectId idRec = pRec->id();
-	AcDbObjectIdArray aridEnt;
-	_getAllEnts(idRec, aridEnt);
+	AcDbObjectId rcdId = rcd->id();
+	AcDbObjectIdArray ents;
+	_get_ents(rcdId, ents);
 
-	_getEntExtents(aridEnt, _extents);
+	// - 获取当前视图范围
+	_get_extents(ents, _extents);
 
-	_initGS(_hdllInstance);
+	// - 初始化GS
+	_init_gs(_hdllInstance);
+	_view->add(rcd, _model);
+	rcd->close();
 
-	_view->add(pRec, _model);
+	// - 设置初始视图参数（viewdirction, upvector, rendermode）
+	_init_view(vdir, upvec); // 东南等测图
+	_view->setMode(mode);
 
-	pRec->close();
-
-	_init_view(AcGeVector3d(1, -1, 1), AcGeVector3d(0, 0, 1)); // 东南等测图
-
-	_view->setMode(AcGsView::kFlatShadedWithWireframe);
-
-	return TRUE;
+	return;
 }
 
-void AcadPreviewCtrl::_init_view(const AcGeVector3d &viewDir, const AcGeVector3d &upVector)
+void AcadPreviewCtrl::_init_view(const AcGeVector3d &vdir, const AcGeVector3d &upvec)
 {
 	// - 获取中心点
 	AcGePoint3d target;
 	_mid(_extents.maxPoint(), _extents.minPoint(), target);
 
 	// - 获取当前DCS
-	AcGeVector3d xaxis, yaxis = upVector, zaxis = viewDir;
+	AcGeVector3d xaxis, yaxis = upvec, zaxis = vdir;
 	xaxis = zaxis.crossProduct(yaxis);
 
 	AcGeMatrix3d xform;
@@ -388,10 +395,7 @@ void AcadPreviewCtrl::_init_view(const AcGeVector3d &viewDir, const AcGeVector3d
 	double height = extents.maxPoint().y - extents.minPoint().y;
 
 	// - 设置view
-	_view->setView(target + viewDir, target, upVector, width * 1.05, height * 1.05);
-
-	// - 重绘
-	OnPaint();
+	_view->setView(target + vdir, target, upvec, width * 1.05, height * 1.05);
 }
 
 void AcadPreviewCtrl::_mid(const AcGePoint3d& pt1, const AcGePoint3d& pt2, AcGePoint3d& ptMid)
@@ -402,7 +406,7 @@ void AcadPreviewCtrl::_mid(const AcGePoint3d& pt1, const AcGePoint3d& pt2, AcGeP
 }
 
 //函数功能:获得块中的所有实体
-void AcadPreviewCtrl::_getAllEnts(const AcDbObjectId& idBlockRec, AcDbObjectIdArray& IDArray)
+void AcadPreviewCtrl::_get_ents(const AcDbObjectId& idBlockRec, AcDbObjectIdArray& IDArray)
 {
 	IDArray.setPhysicalLength(0);
 
@@ -431,7 +435,7 @@ void AcadPreviewCtrl::_getAllEnts(const AcDbObjectId& idBlockRec, AcDbObjectIdAr
 }
 
 //函数功能:获得实体的范围
-Acad::ErrorStatus AcadPreviewCtrl::_getEntExtents(const AcDbObjectId& idEnt, AcDbExtents& extents)
+Acad::ErrorStatus AcadPreviewCtrl::_get_extents(const AcDbObjectId& idEnt, AcDbExtents& extents)
 {
 	Acad::ErrorStatus es;
 	AcDbEntity *pEnt = NULL;
@@ -453,12 +457,12 @@ Acad::ErrorStatus AcadPreviewCtrl::_getEntExtents(const AcDbObjectId& idEnt, AcD
 }
 
 
-void AcadPreviewCtrl::_getEntExtents(const AcDbObjectIdArray& aridEnt, AcDbExtents& extents)
+void AcadPreviewCtrl::_get_extents(const AcDbObjectIdArray& aridEnt, AcDbExtents& extents)
 {
 	for (int i = 0; i < aridEnt.length(); i++)
 	{
 		AcDbExtents tem;
-		if (_getEntExtents(aridEnt[i], tem) == Acad::eOk)
+		if (_get_extents(aridEnt[i], tem) == Acad::eOk)
 		{
 			extents.addExt(tem);
 		}

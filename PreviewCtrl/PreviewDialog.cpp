@@ -35,6 +35,6 @@ LRESULT PreviewDialog::OnAcadKeepFocus(WPARAM, LPARAM)
 
 void PreviewDialog::init()
 {
-	_ctrl.init(curDoc()->database());
+	_ctrl.show(curDoc()->database());
 }
 
